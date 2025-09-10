@@ -24,7 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		CA745B762E6D64EE003AF704 /* Race-Savant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Race-Savant.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		CA745B762E6D64EE003AF704 /* Race Savant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Race Savant.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA745B832E6D64F0003AF704 /* Race-SavantTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Race-SavantTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA745B8D2E6D64F0003AF704 /* Race-SavantUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Race-SavantUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -73,7 +73,7 @@
 		CA745B772E6D64EE003AF704 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				CA745B762E6D64EE003AF704 /* Race-Savant.app */,
+				CA745B762E6D64EE003AF704 /* Race Savant.app */,
 				CA745B832E6D64F0003AF704 /* Race-SavantTests.xctest */,
 				CA745B8D2E6D64F0003AF704 /* Race-SavantUITests.xctest */,
 			);
@@ -102,7 +102,7 @@
 			packageProductDependencies = (
 			);
 			productName = "Race-Savant";
-			productReference = CA745B762E6D64EE003AF704 /* Race-Savant.app */;
+			productReference = CA745B762E6D64EE003AF704 /* Race Savant.app */;
 			productType = "com.apple.product-type.application";
 		};
 		CA745B822E6D64F0003AF704 /* Race-SavantTests */ = {
@@ -393,7 +393,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "hindub.Race-Savant";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Race Savant";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -421,7 +421,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "hindub.Race-Savant";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Race Savant";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
