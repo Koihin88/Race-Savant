@@ -8,7 +8,7 @@ import fastf1
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session as OrmSession
 
-from models import Base, Event, Session as DbSession, Driver, Lap, Telemetry
+from models import Base, Event, Session as DbSession, Driver, Lap, Telemetry, DriverEntry
 from migrations import run_migrations
 from utils import coalesce_attr, to_ms, to_int, to_float, timedelta_to_s
 
@@ -209,6 +209,13 @@ def load_fastf1_session(
                 code = str(dseries.get("Abbreviation")).strip()
                 if code:
                     code_to_driver[code] = drv
+                # Per-event entry with team at this event
+                try:
+                    team_name = dseries.get("TeamName")
+                    team_color = dseries.get("TeamColor")
+                    _ensure_driver_entry(db, event_id=ev.id, driver_id=drv.id, team_name=team_name, team_color=team_color)
+                except Exception:
+                    pass
             except Exception:
                 continue
     else:
@@ -219,6 +226,12 @@ def load_fastf1_session(
                 dseries = fsession.get_driver(code)
                 drv = _upsert_driver_from_series(db, dseries)
                 code_to_driver[code] = drv
+                try:
+                    team_name = dseries.get("TeamName")
+                    team_color = dseries.get("TeamColor")
+                    _ensure_driver_entry(db, event_id=ev.id, driver_id=drv.id, team_name=team_name, team_color=team_color)
+                except Exception:
+                    pass
             except Exception:
                 continue
 
@@ -274,43 +287,12 @@ def load_fastf1_session(
 
         if store_telemetry and lap_number:
             try:
-                # Prefer modern API: pick_drivers + pick_laps
-                picked = None
-                subset = None
-                try:
-                    # FastF1 >= 3.x
-                    subset = laps_df.pick_drivers(code)
-                except AttributeError:
-                    # Older API
-                    try:
-                        subset = laps_df.pick_driver(code)
-                    except Exception:
-                        subset = None
-
-                if subset is not None:
-                    # Try new pick_laps (returns a Laps selection)
-                    try:
-                        res = subset.pick_laps(lap_number)
-                        # If res already supports get_car_data (Lap object), use it;
-                        # otherwise pick the first row which should be a Lap-like object.
-                        if hasattr(res, "get_car_data"):
-                            picked = res
-                        else:
-                            try:
-                                picked = res.iloc[0]
-                            except Exception:
-                                picked = None
-                    except Exception:
-                        # Fallback to deprecated pick_lap
-                        try:
-                            picked = subset.pick_lap(lap_number)
-                        except Exception:
-                            picked = None
-
-                if picked is None or not hasattr(picked, "get_car_data"):
-                    # Nothing to do for this lap/driver
+                # FastF1 >= 3.1+: pick_drivers + pick_laps only (no deprecated fallbacks)
+                subset = laps_df.pick_drivers(code)
+                res = subset.pick_laps(lap_number)
+                if res is None or len(res) == 0:
                     continue
-
+                picked = res.iloc[0]
                 # Telemetry: speed, rpm, gear, throttle, brake, drs, time
                 tel = picked.get_car_data().add_distance()  # ensure Distance column
                 merged = tel
@@ -348,6 +330,28 @@ def load_fastf1_session(
         "laps": lap_count,
         "telemetry_rows": tel_count,
     }
+
+
+def _ensure_driver_entry(db: OrmSession, *, event_id: int, driver_id: int, team_name, team_color) -> None:
+    """Create/update a per-event driver entry capturing team affiliation for historical queries."""
+    entry = db.execute(
+        select(DriverEntry).where(DriverEntry.event_id == event_id, DriverEntry.driver_id == driver_id)
+    ).scalar_one_or_none()
+    if entry:
+        # Update only if values present; keep historical record consistent with latest load for the event
+        if team_name:
+            entry.team_name = str(team_name)
+        if team_color:
+            entry.team_color = str(team_color)
+        return
+    db.add(
+        DriverEntry(
+            event_id=event_id,
+            driver_id=driver_id,
+            team_name=(str(team_name) if team_name else None),
+            team_color=(str(team_color) if team_color else None),
+        )
+    )
 
 
 def _resolve_schedule_row(year: int, gp: int | str) -> Optional[pd.Series]:

@@ -3,18 +3,36 @@ from __future__ import annotations
 import random
 from typing import Iterator, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+import os
+from fastapi import Depends, FastAPI, HTTPException, Query, Body, Header
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, distinct
 from sqlalchemy.orm import Session as OrmSession
 
 from db import create_engine_and_session, db_session
 from models import Driver, Event, Lap, Session as DbSession, Telemetry
 import pandas as pd
 import fastf1
+from etl import list_event_sessions, load_fastf1_session
 
 
 app = FastAPI(title="Race Savant API", version="0.1.0")
+
+# CORS (dev-friendly; restrict via env if desired)
+try:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    allowed_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
+    origins = [o.strip() for o in allowed_origins.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+except Exception:
+    pass
 
 
 # --- DB wiring (sync SQLAlchemy with dependency) ---
@@ -24,6 +42,20 @@ engine, SessionLocal = create_engine_and_session()
 def get_db() -> Iterator[OrmSession]:
     with db_session(SessionLocal) as session:
         yield session
+
+
+# --- Simple Admin auth (optional) ---
+def require_admin(x_admin_token: str | None = Header(default=None)):
+    """If ADMIN_TOKEN env var is set, require 'X-Admin-Token' header to match.
+
+    If ADMIN_TOKEN is not set, allow all (dev convenience).
+    """
+    expected = os.getenv("ADMIN_TOKEN")
+    if not expected:
+        return True
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return True
 
 
 # --- Health/Test Endpoint ---
@@ -371,6 +403,134 @@ def get_schedule(year: int, include_testing: bool = False):
             setattr(ev, f"Session{i}DateUtc", dt)
         items.append(ev)
     return items
+
+
+# --- Admin: Overview + Load/Delete sessions ---
+
+class AdminSessionStatus(BaseModel):
+    type: str
+    scheduled_utc: Optional[str] = None
+    session_id: Optional[int] = None
+    laps: int = 0
+    drivers: int = 0
+    telemetry_rows: Optional[int] = None
+
+
+class AdminEventOverview(BaseModel):
+    round: Optional[int] = None
+    name: Optional[str] = None
+    location: Optional[str] = None
+    country: Optional[str] = None
+    date: Optional[str] = None
+    event_id: Optional[int] = None
+    sessions: list[AdminSessionStatus]
+
+
+@app.get(
+    "/admin/overview/{year}",
+    response_model=list[AdminEventOverview],
+    summary="List season events with session load status",
+)
+def admin_overview(year: int, db: OrmSession = Depends(get_db), _: bool = Depends(require_admin)):
+    try:
+        sched = fastf1.get_event_schedule(year, include_testing=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load schedule: {e}")
+
+    overviews: list[AdminEventOverview] = []
+    for _, row in sched.iterrows():
+        try:
+            rnd = int(row.get("RoundNumber", 0))
+        except Exception:
+            rnd = 0
+        if rnd < 1:
+            continue
+        name = row.get("EventName")
+        location = row.get("Location") or row.get("EventLocation")
+        country = row.get("Country")
+        date = _to_iso_utc(row.get("EventDate"))
+        # Match an existing DB event if loaded
+        ev_row = db.execute(select(Event).where(Event.year == year, Event.name == name)).scalar_one_or_none()
+        event_id = ev_row.id if ev_row else None
+
+        # Extract scheduled sessions for this event
+        sessions = []
+        from etl import _extract_sessions_from_row  # reuse helper
+
+        try:
+            sess_pairs = _extract_sessions_from_row(row)
+        except Exception:
+            sess_pairs = []
+        # Build status for each scheduled session code
+        for code, ts in sess_pairs:
+            status = AdminSessionStatus(type=code, scheduled_utc=(pd.to_datetime(ts, utc=True).isoformat().replace("+00:00", "Z") if ts is not None else None))
+            if event_id is not None:
+                srow = db.execute(
+                    select(DbSession).where(DbSession.event_id == event_id, DbSession.type == code)
+                ).scalar_one_or_none()
+                if srow is not None:
+                    status.session_id = srow.id
+                    # counts
+                    lc = db.execute(select(func.count()).select_from(Lap).where(Lap.session_id == srow.id)).scalar_one()
+                    dc = db.execute(
+                        select(func.count(distinct(Lap.driver_id))).where(Lap.session_id == srow.id)
+                    ).scalar_one()
+                    status.laps = int(lc or 0)
+                    status.drivers = int(dc or 0)
+            sessions.append(status)
+
+        overviews.append(
+            AdminEventOverview(
+                round=rnd,
+                name=name,
+                location=location,
+                country=country,
+                date=date,
+                event_id=event_id,
+                sessions=sessions,
+            )
+        )
+    # sort by round
+    overviews.sort(key=lambda x: (x.round or 0))
+    return overviews
+
+
+class AdminLoadRequest(BaseModel):
+    year: int
+    gp: str | int
+    session_type: str
+    store_telemetry: bool = True
+    skip_if_exists: bool = False
+
+
+@app.post("/admin/load", summary="Load a session into DB via FastF1")
+def admin_load(req: AdminLoadRequest, db: OrmSession = Depends(get_db), _: bool = Depends(require_admin)):
+    gp_val = req.gp
+    if isinstance(gp_val, str) and gp_val.isdigit():
+        gp_val = int(gp_val)
+    try:
+        res = load_fastf1_session(
+            db,
+            year=req.year,
+            gp=gp_val,
+            session_type=req.session_type,
+            cache_dir="cache",
+            store_telemetry=req.store_telemetry,
+            skip_if_exists=req.skip_if_exists,
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Load failed: {e}")
+
+
+@app.delete("/admin/sessions/{session_id}", summary="Delete a session and related data")
+def admin_delete_session(session_id: int, db: OrmSession = Depends(get_db), _: bool = Depends(require_admin)):
+    srow = db.execute(select(DbSession).where(DbSession.id == session_id)).scalar_one_or_none()
+    if srow is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Cascades will remove laps and telemetry
+    db.delete(srow)
+    return {"deleted_session_id": session_id}
 
 
 if __name__ == "__main__":

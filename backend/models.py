@@ -75,6 +75,22 @@ class Driver(Base):
     laps = relationship("Lap", back_populates="driver")
 
 
+class DriverEntry(Base):
+    __tablename__ = "driver_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id", ondelete="CASCADE"), index=True)
+
+    team_name: Mapped[Optional[str]] = mapped_column(String(100))
+    team_color: Mapped[Optional[str]] = mapped_column(String(10))
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "driver_id", name="uq_driver_entry_event_driver"),
+        Index("ix_driver_entries_event", "event_id"),
+    )
+
+
 class Lap(Base):
     __tablename__ = "laps"
 

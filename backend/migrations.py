@@ -47,6 +47,24 @@ def run_migrations(engine) -> None:
                 conn.execute(text("ALTER TABLE drivers DROP COLUMN IF EXISTS headshot_url"))
             except Exception:
                 pass
+
+            # Ensure driver_entries table exists
+            try:
+                conn.execute(text(
+                    """
+                    CREATE TABLE IF NOT EXISTS driver_entries (
+                        id SERIAL PRIMARY KEY,
+                        event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                        driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+                        team_name VARCHAR(100),
+                        team_color VARCHAR(10),
+                        CONSTRAINT uq_driver_entry_event_driver UNIQUE (event_id, driver_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_driver_entries_event ON driver_entries(event_id);
+                    """
+                ))
+            except Exception:
+                pass
     except Exception:
         # Ignore inspection issues; create_all still ensures tables exist
         pass
