@@ -50,7 +50,9 @@ def _upsert_event(db: OrmSession, fevent) -> Event:
 
 def _upsert_session(db: OrmSession, event_id: int, fsession, explicit_type: Optional[str] = None) -> DbSession:
     # Prefer explicitly requested session type; fall back to attributes from FastF1
-    stype = explicit_type or coalesce_attr(fsession, "session_type", "type", "name")
+    raw_type = explicit_type or coalesce_attr(fsession, "session_type", "type", "name")
+    # Normalize to canonical code (FP1/FP2/FP3/Q/SQ/SS/S/R)
+    stype = _normalize_session_name(raw_type) or (str(raw_type).upper() if raw_type else None)
     sdate = coalesce_attr(fsession, "date")
 
     sess = db.execute(

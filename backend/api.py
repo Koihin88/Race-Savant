@@ -463,10 +463,17 @@ def admin_overview(year: int, db: OrmSession = Depends(get_db), _: bool = Depend
             sess_pairs = []
         # Build status for each scheduled session code
         for code, ts in sess_pairs:
+            # Normalize schedule type to our canonical codes to match stored rows
+            norm = code
+            try:
+                from etl import _normalize_session_name as norm_fn
+                norm = norm_fn(code) or code
+            except Exception:
+                pass
             status = AdminSessionStatus(type=code, scheduled_utc=(pd.to_datetime(ts, utc=True).isoformat().replace("+00:00", "Z") if ts is not None else None))
             if event_id is not None:
                 srow = db.execute(
-                    select(DbSession).where(DbSession.event_id == event_id, DbSession.type == code)
+                    select(DbSession).where(DbSession.event_id == event_id, DbSession.type == norm)
                 ).scalar_one_or_none()
                 if srow is not None:
                     status.session_id = srow.id
