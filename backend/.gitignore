@@ -11,3 +11,6 @@ wheels/
 
 # Tools
 .python-version
+
+# Fast-F1 cache 
+.cache/
