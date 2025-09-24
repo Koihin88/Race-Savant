@@ -13,4 +13,4 @@ wheels/
 .python-version
 
 # Fast-F1 cache 
-.cache/
+cache/

@@ -274,13 +274,43 @@ def load_fastf1_session(
 
         if store_telemetry and lap_number:
             try:
-                # Use new API to select driver subset, then pick single lap object
+                # Prefer modern API: pick_drivers + pick_laps
+                picked = None
+                subset = None
                 try:
+                    # FastF1 >= 3.x
                     subset = laps_df.pick_drivers(code)
-                    picked = subset.pick_lap(lap_number)
                 except AttributeError:
-                    # Older API compatibility
-                    picked = laps_df.pick_driver(code).pick_lap(lap_number)
+                    # Older API
+                    try:
+                        subset = laps_df.pick_driver(code)
+                    except Exception:
+                        subset = None
+
+                if subset is not None:
+                    # Try new pick_laps (returns a Laps selection)
+                    try:
+                        res = subset.pick_laps(lap_number)
+                        # If res already supports get_car_data (Lap object), use it;
+                        # otherwise pick the first row which should be a Lap-like object.
+                        if hasattr(res, "get_car_data"):
+                            picked = res
+                        else:
+                            try:
+                                picked = res.iloc[0]
+                            except Exception:
+                                picked = None
+                    except Exception:
+                        # Fallback to deprecated pick_lap
+                        try:
+                            picked = subset.pick_lap(lap_number)
+                        except Exception:
+                            picked = None
+
+                if picked is None or not hasattr(picked, "get_car_data"):
+                    # Nothing to do for this lap/driver
+                    continue
+
                 # Telemetry: speed, rpm, gear, throttle, brake, drs, time
                 tel = picked.get_car_data().add_distance()  # ensure Distance column
                 merged = tel
