@@ -168,12 +168,28 @@ extension APIService {
         enum DurationValue: Decodable {
             case str(String)
             case arr([String?])
+            case dbl(Double)
+            case arrD([Double?])
 
             init(from decoder: Decoder) throws {
-                let c = try decoder.singleValueContainer()
-                if let s = try? c.decode(String.self) { self = .str(s) }
-                else if let a = try? c.decode([String?].self) { self = .arr(a) }
-                else { self = .str("") }
+                let container = try decoder.singleValueContainer()
+                if let stringValue = try? container.decode(String.self) {
+                    self = .str(stringValue)
+                    return
+                }
+                if let doubleValue = try? container.decode(Double.self) {
+                    self = .dbl(doubleValue)
+                    return
+                }
+                if let stringArray = try? container.decode([String?].self) {
+                    self = .arr(stringArray)
+                    return
+                }
+                if let doubleArray = try? container.decode([Double?].self) {
+                    self = .arrD(doubleArray)
+                    return
+                }
+                self = .str("")
             }
         }
     }
