@@ -22,37 +22,9 @@ struct StandingsView: View {
 
                 List {
                     if segment == .drivers {
-                        ForEach(drivers) { row in
-                            HStack {
-                                Text("\(row.position)")
-                                    .monospacedDigit()
-                                    .frame(width: 28, alignment: .leading)
-                                VStack(alignment: .leading) {
-                                    Text(driverName(number: row.driverNumber))
-                                    Text(teamName(number: row.driverNumber))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if let wins = Int(row.wins), wins > 0 {
-                                    Label("\(wins)", systemImage: "trophy.fill")
-                                        .labelStyle(.titleAndIcon)
-                                }
-                            }
-                        }
+                        DriverStandingsList(drivers: drivers)
                     } else {
-                        ForEach(constructors) { row in
-                            HStack {
-                                Text(row.position).frame(width: 28, alignment: .leading)
-                                Text(row.name)
-                                Spacer()
-                                if let wins = Int(row.wins), wins > 0 {
-                                    Label("\(wins)", systemImage: "trophy.fill")
-                                        .labelStyle(.titleAndIcon)
-                                }
-                                Text("\(row.points)")
-                                    .monospacedDigit()
-                            }
-                        }
+                        ConstructorStandingsList(constructors: constructors)
                     }
                 }
                 .listStyle(.plain)
@@ -89,14 +61,4 @@ struct StandingsView: View {
         }
     }
 
-    // Mapping from driver number to display info.
-    // For now, we only have the number; you can expand with a fuller roster.
-    private func driverName(number: String) -> String {
-        if let n = Int(number), let m = DriverRoster.map[n] { return m.fullName }
-        return "#\(number)"
-    }
-    private func teamName(number: String) -> String {
-        if let n = Int(number), let m = DriverRoster.map[n] { return m.team }
-        return ""
-    }
 }
