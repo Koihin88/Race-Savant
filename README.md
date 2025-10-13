@@ -6,19 +6,24 @@ Data sources: Fast‑F1, jolpica‑F1 API, Open‑F1 API.
 
 Screenshots
 
-![Home](docs/01-home.PNG)
-
-![Session Overview](docs/02-session-overview.PNG)
-
-![Session Detail](docs/03-session-detail.PNG)
-
-![Driver Standings](docs/04-driver-standings.PNG)
-
-![Constructor Standings](docs/05-constructor-standings.PNG)
-
-![Telemetry Selections](docs/06-telemetry-selections.PNG)
-
-![Telemetry Graphs](docs/07-telemtry-graphs.PNG)
+<table>
+  <tr>
+    <td><img src="docs/01-home.PNG" alt="Home" width="250"></td>
+    <td><img src="docs/02-session-overview.PNG" alt="Session Overview" width="250"></td>
+    <td><img src="docs/03-session-detail.PNG" alt="Session Detail" width="250"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/04-driver-standings.PNG" alt="Driver Standings" width="250"></td>
+    <td><img src="docs/05-constructor-standings.PNG" alt="Constructor Standings" width="250"></td>
+    <td><img src="docs/06-telemetry-selections.PNG" alt="Telemetry Selections" width="250"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/07-telemtry-graphs.PNG" alt="Telemetry Graphs" width="250"></td>
+    <td></td>
+    <td></td>
+  </tr>
+  
+</table>
 
 Quick features
 - Session list (Practice/Quali/Race)
