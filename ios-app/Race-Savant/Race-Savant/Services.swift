@@ -7,7 +7,7 @@ final class APIService {
     private init() {}
 
     // Base URLs
-    var backendBase = URL(string: "http://127.0.0.1:8000")!
+    var backendBase = URL(string: "http://10.10.1.231:8000")!
     let openF1Base = URL(string: "https://api.openf1.org/v1")!
     let ergastDriver = URL(string: "https://api.jolpi.ca/ergast/f1/2025/driverstandings/")!
     let ergastConstructor = URL(string: "https://api.jolpi.ca/ergast/f1/2025/constructorstandings/")!
@@ -89,7 +89,58 @@ final class APIService {
         }
     }
 
-    // MARK: - Ergast Standings
+    // MARK: - Standings (Backend progression endpoints)
+    struct StandingsProgress: Decodable { let season: Int; let rounds: Int; let entries: [StandingSeries] }
+    struct StandingSeries: Decodable { let code: String; let points: [Double?] }
+
+    /// Get driver standings using backend progression API.
+    /// Uses the last round points as current standings and sorts descending.
+    func getDriverStandings() async throws -> [DriverStandingItem] {
+        // Year hardcoded to 2025 to match current app scope and cache keys
+        let url = backendBase.appending(path: "/standings/2025/drivers")
+        let prog: StandingsProgress = try await fetch(url)
+        let latestIndex = max(prog.rounds - 1, 0)
+        // Build rows with latest (non-nil) points
+        let rows: [(code: String, pts: Double)] = prog.entries.compactMap { e in
+            let latest = (e.points.reversed().first { $0 != nil }) ?? e.points[safe: latestIndex] ?? 0
+            return (e.code, latest ?? 0)
+        }
+        // Sort by points desc and map to UI model
+        let sorted = rows.sorted { $0.pts > $1.pts }
+        return sorted.enumerated().map { idx, item in
+            // DriverStandingItem expects a driverNumber string; we may only have code.
+            // Pass code here; the UI will resolve code to name/team, or show as fallback.
+            DriverStandingItem(
+                position: idx + 1,
+                points: String(format: item.pts == floor(item.pts) ? "%.0f" : "%.1f", item.pts),
+                wins: "0",
+                driverNumber: item.code
+            )
+        }
+    }
+
+    /// Get constructor standings using backend progression API.
+    /// Uses the last round points as current standings and sorts descending.
+    func getConstructorStandings() async throws -> [ConstructorStandingItem] {
+        let url = backendBase.appending(path: "/standings/2025/constructors")
+        let prog: StandingsProgress = try await fetch(url)
+        let latestIndex = max(prog.rounds - 1, 0)
+        let rows: [(code: String, pts: Double)] = prog.entries.compactMap { e in
+            let latest = (e.points.reversed().first { $0 != nil }) ?? e.points[safe: latestIndex] ?? 0
+            return (e.code, latest ?? 0)
+        }
+        let sorted = rows.sorted { $0.pts > $1.pts }
+        return sorted.enumerated().map { idx, item in
+            ConstructorStandingItem(
+                position: String(idx + 1),
+                points: String(format: item.pts == floor(item.pts) ? "%.0f" : "%.1f", item.pts),
+                wins: "0",
+                name: item.code
+            )
+        }
+    }
+
+    // MARK: - Ergast Standings (legacy, kept for reference)
     struct ErgastMRData<T: Decodable>: Decodable { let MRData: T }
     struct StandingsTable<T: Decodable>: Decodable { let StandingsTable: T }
     struct DriverStandingsLists: Decodable { let StandingsLists: [DriverStandingsList] }
@@ -102,27 +153,7 @@ final class APIService {
     struct ConstructorStanding: Decodable { let position: String; let points: String; let wins: String; let Constructor: ErgastConstructor }
     struct ErgastConstructor: Decodable { let name: String }
 
-    func getDriverStandings() async throws -> [DriverStandingItem] {
-        let data: ErgastMRData<StandingsTable<DriverStandingsLists>> = try await fetch(ergastDriver)
-        guard let list = data.MRData.StandingsTable.StandingsLists.first else { return [] }
-        return list.DriverStandings.map { item in
-            DriverStandingItem(position: Int(item.position) ?? 0,
-                               points: item.points,
-                               wins: item.wins,
-                               driverNumber: item.Driver.permanentNumber ?? "")
-        }
-    }
-
-    func getConstructorStandings() async throws -> [ConstructorStandingItem] {
-        let data: ErgastMRData<StandingsTable<ConstructorStandingsLists>> = try await fetch(ergastConstructor)
-        guard let list = data.MRData.StandingsTable.StandingsLists.first else { return [] }
-        return list.ConstructorStandings.map { item in
-            ConstructorStandingItem(position: item.position,
-                                    points: item.points,
-                                    wins: item.wins,
-                                    name: item.Constructor.name)
-        }
-    }
+    // Legacy functions removed in favor of backend progression endpoints above.
 
     // MARK: - Generic fetch
     private func fetch<T: Decodable>(_ url: URL) async throws -> T {

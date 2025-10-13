@@ -96,7 +96,7 @@ enum DriverRoster {
 }
 
 // Navigation value for session selection to avoid tuple Hashable inference issues
-struct EventSessionNav: Hashable {
+struct EventSessionNavigation: Hashable {
     let event: ScheduleEvent
     let index: Int
 }

@@ -15,6 +15,8 @@ struct DriverStandingsList: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Text("\(row.points)")
+                    .monospacedDigit()
                 if let wins = Int(row.wins), wins > 0 {
                     Label("\(wins)", systemImage: "trophy.fill")
                         .labelStyle(.titleAndIcon)
@@ -26,11 +28,11 @@ struct DriverStandingsList: View {
     // Mapping from driver number to display info.
     private func driverName(number: String) -> String {
         if let n = Int(number), let m = DriverRoster.map[n] { return m.fullName }
-        return "#\(number)"
+        // When using backend progression, `number` may actually be a code (e.g., VER)
+        return number
     }
     private func teamName(number: String) -> String {
         if let n = Int(number), let m = DriverRoster.map[n] { return m.team }
         return ""
     }
 }
-

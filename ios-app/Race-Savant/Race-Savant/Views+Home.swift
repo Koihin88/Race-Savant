@@ -1,12 +1,13 @@
 import SwiftUI
 
 struct HomeView: View {
+    @Namespace private var namespace
     @State private var selectedSegment: Segment = .upcoming
     @State private var year: Int = Calendar.current.component(.year, from: Date())
-    @State private var events: [ScheduleEvent] = []
+    @State private var scheduleEvents: [ScheduleEvent] = []
     @State private var isLoading = false
-    @State private var errorText: String?
-    @StateObject private var net = NetworkMonitor.shared
+    @State private var errorMessage: String?
+    @StateObject private var networkMonitor = NetworkMonitor.shared
 
     var body: some View {
         NavigationStack {
@@ -21,64 +22,88 @@ struct HomeView: View {
                 if isLoading {
                     ProgressView().padding()
                 }
-                if let err = errorText { Text(err).foregroundStyle(.red).padding(.horizontal) }
+                if let error = errorMessage {
+                    Text(error).foregroundStyle(.red).padding(.horizontal)
+                }
 
-                List(filteredEvents) { ev in
-                    NavigationLink(value: ev) {
-                        EventCard(event: ev)
+                List(filteredEvents) { event in
+                    // Use a ZStack to overlay an invisible NavigationLink
+                    ZStack(alignment: .leading) {
+                        NavigationLink(value: event) {
+                            EmptyView() // The link itself has no visible content
+                        }
+                        .opacity(0.0) // Make the link invisible but still tappable
+
+                        // Your visible card view
+                        EventCard(event: event)
+                            .matchedTransitionSource(id: event.id, in: namespace)
                     }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 }
                 .listStyle(.plain)
+                .background(Color(.systemGroupedBackground))
             }
-            .navigationDestination(for: ScheduleEvent.self) { ev in
-                EventDetailView(event: ev)
+            .navigationDestination(for: ScheduleEvent.self) { event in
+                EventDetailView(event: event)
+                    .navigationTransition(.zoom(sourceID: event.id, in: namespace))
             }
-            .navigationDestination(for: EventSessionNav.self) { nav in
-                SessionResultsView(year: Calendar.current.component(.year, from: Date()), event: nav.event, sessionIndex: nav.index)
+            .navigationDestination(for: EventSessionNavigation.self) { navigationData in
+                SessionResultsView(year: Calendar.current.component(.year, from: Date()), event: navigationData.event, sessionIndex: navigationData.index)
             }
             .navigationTitle("Home")
             .task { await loadSchedule() }
-            .refreshable { await loadSchedule(force: true) }
+            .refreshable { await loadSchedule(forceRefresh: true) }
         }
     }
 
     private var filteredEvents: [ScheduleEvent] {
         let now = Date()
-        var list = events.filter { ev in
-            if selectedSegment == .past { return ev.eventDate < now }
-            return ev.eventDate >= now
+        var filteredList = scheduleEvents.filter { event in
+            if selectedSegment == .past {
+                return event.eventDate < now
+            }
+            return event.eventDate >= now
         }
         if selectedSegment == .past {
-            list.sort { $0.eventDate > $1.eventDate }
+            filteredList.sort { $0.eventDate > $1.eventDate }
         } else {
-            list.sort { $0.eventDate < $1.eventDate }
+            filteredList.sort { $0.eventDate < $1.eventDate }
         }
-        return list
+        return filteredList
     }
 
-    private func loadSchedule(force: Bool = false) async {
+    private func loadSchedule(forceRefresh: Bool = false) async {
         guard !isLoading else { return }
-        await MainActor.run { isLoading = true; errorText = nil }
-        defer { Task { await MainActor.run { isLoading = false } } }
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        defer {
+            Task {
+                await MainActor.run { isLoading = false }
+            }
+        }
         // Try cache first
-        if !force, let cached: [ScheduleEvent] = LocalStore.load(LocalStore.scheduleKey(year: year)) {
-            await MainActor.run { events = cached }
+        if !forceRefresh, let cachedEvents: [ScheduleEvent] = LocalStore.load(LocalStore.scheduleKey(year: year)) {
+            await MainActor.run { scheduleEvents = cachedEvents }
             return
         }
         // 2025 is hardcoded
         if year == 2025 {
-            let evs = HardcodedSchedule2025.events
-            await MainActor.run { events = evs }
-            LocalStore.save(LocalStore.scheduleKey(year: year), value: evs)
+            let hardcodedEvents = HardcodedSchedule2025.events
+            await MainActor.run { scheduleEvents = hardcodedEvents }
+            LocalStore.save(LocalStore.scheduleKey(year: year), value: hardcodedEvents)
             return
         }
-        // Fallback for other years (dev/testing): fetch from backend Fast‑F1 schedule passthrough
+        // Fallback for other years (dev/testing): fetch from backend
         do {
-            let evs = try await APIService.shared.getSchedule(year: year)
-            await MainActor.run { events = evs }
-            LocalStore.save(LocalStore.scheduleKey(year: year), value: evs)
+            let fetchedEvents = try await APIService.shared.getSchedule(year: year)
+            await MainActor.run { scheduleEvents = fetchedEvents }
+            LocalStore.save(LocalStore.scheduleKey(year: year), value: fetchedEvents)
         } catch {
-            await MainActor.run { errorText = error.localizedDescription }
+            await MainActor.run { errorMessage = error.localizedDescription }
         }
     }
 }
@@ -95,21 +120,29 @@ private struct EventCard: View {
                 }
                 .font(.headline)
                 Text(event.eventName).font(.subheadline)
-                Text(dateRangeString(event.eventDate))
+                Text(formatDateRange(from: event.eventDate))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Image(systemName: "chevron.right")
+                .foregroundColor(.secondary)
         }
-        .padding(.vertical, 6)
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+        )
     }
 
-    private func dateRangeString(_ start: Date) -> String {
-        let cal = Calendar.current
-        if let end = cal.date(byAdding: .day, value: 2, to: start) {
-            let f = DateFormatter()
-            f.dateFormat = "MM-dd"
-            return "\(f.string(from: start)) to \(f.string(from: end))"
+    private func formatDateRange(from startDate: Date) -> String {
+        let calendar = Calendar.current
+        if let endDate = calendar.date(byAdding: .day, value: 2, to: startDate) {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "MM-dd"
+            return "\(dateFormatter.string(from: startDate)) to \(dateFormatter.string(from: endDate))"
         }
         return ""
     }
@@ -130,38 +163,40 @@ private struct EventDetailView: View {
                 .padding(.vertical, 4)
             }
             Section("Sessions") {
-                ForEach(Array(sessionRows.enumerated()), id: \.offset) { idx, row in
-                    let isFuture = row.date > Date()
-                    NavigationLink(value: EventSessionNav(event: event, index: idx)) {
+                ForEach(Array(sessionDetails.enumerated()), id: \.offset) { index, session in
+                    let isFutureSession = session.date > Date()
+                    NavigationLink(value: EventSessionNavigation(event: event, index: index)) {
                         HStack {
-                            Text(row.label)
+                            Text(session.label)
                             Spacer()
-                            Text(localTimeString(row.date))
+                            Text(formatToLocalTime(session.date))
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .disabled(isFuture)
-                    .opacity(isFuture ? 0.5 : 1.0)
+                    .disabled(isFutureSession)
+                    .opacity(isFutureSession ? 0.5 : 1.0)
                 }
             }
         }
         .navigationTitle(event.eventName)
     }
 
-    private var sessionRows: [(label: String, date: Date)] {
-        var out: [(String, Date)] = []
+    private var sessionDetails: [(label: String, date: Date)] {
+        var details: [(String, Date)] = []
         for i in 0..<min(event.sessionDatesUTC.count, event.sessionNames.count) {
-            if let d = event.sessionDatesUTC[i], let name = event.sessionNames[i] { out.append((name, d)) }
+            if let date = event.sessionDatesUTC[i], let name = event.sessionNames[i] {
+                details.append((name, date))
+            }
         }
-        return out
+        return details
     }
 
-    private func localTimeString(_ utc: Date) -> String {
-        let fmt = DateFormatter()
-        fmt.timeZone = .current
-        fmt.dateStyle = .short
-        fmt.timeStyle = .short
-        return fmt.string(from: utc)
+    private func formatToLocalTime(_ utcDate: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = .current
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: utcDate)
     }
 }
 
@@ -169,44 +204,41 @@ private struct EventDetailView: View {
 
 extension HomeView {
     // Sessions are clickable only if event has at least one past session based on current time
-    // We also grey out if offline and no cached results for that event exist (best-effort heuristic)
-    func isEventInteractable(_ ev: ScheduleEvent) -> Bool {
-        // If upcoming segment is selected, disable
+    // We also grey out if offline and no cached results for that event exist
+    func isEventInteractable(_ event: ScheduleEvent) -> Bool {
         if selectedSegment == .upcoming { return false }
-        // If device time seems off (far from UTC), rely on cache presence
-        if deviceTimeSuspicious() || !net.isOnline {
-            return hasAnyCachedResult(for: ev)
+        if isDeviceTimeSuspicious() || !networkMonitor.isOnline {
+            return hasAnyCachedResult(for: event)
         }
         // Otherwise enable if any session date is in the past
         let now = Date()
-        return ev.sessionDatesUTC.contains { d in
-            if let d { return d <= now } else { return false }
+        return event.sessionDatesUTC.contains { date in
+            if let date {
+                return date <= now
+            } else {
+                return false
+            }
         }
     }
 
-    private func deviceTimeSuspicious() -> Bool {
+    private func isDeviceTimeSuspicious() -> Bool {
         // Heuristic: compare device time to a reference derived from known UTC event dates.
-        // If median delta exceeds 6 hours, consider clock suspicious.
-        let sample = HardcodedSchedule2025.events.prefix(3).compactMap { $0.sessionDatesUTC.first ?? nil }
-        guard !sample.isEmpty else { return false }
+        let sampleDates = HardcodedSchedule2025.events.prefix(3).compactMap { $0.sessionDatesUTC.first ?? nil }
+        guard !sampleDates.isEmpty else { return false }
         let now = Date()
-        let deltas = sample.map { abs(now.timeIntervalSince($0)) }
-        let sorted = deltas.sorted()
-        let median = sorted[sorted.count/2]
-        return median > 6 * 3600
+        let timeDeltas = sampleDates.map { abs(now.timeIntervalSince($0)) }
+        let sortedDeltas = timeDeltas.sorted()
+        let medianDelta = sortedDeltas[sortedDeltas.count / 2]
+        let sixHoursInSeconds: TimeInterval = 6 * 3600
+        return medianDelta > sixHoursInSeconds
     }
 
-    private func hasAnyCachedResult(for ev: ScheduleEvent) -> Bool {
+    private func hasAnyCachedResult(for event: ScheduleEvent) -> Bool {
         // Check if any of the session results for this event was cached previously
-        for i in 0..<min(ev.sessionNames.count, ev.sessionDatesUTC.count) {
-            guard let name = ev.sessionNames[i] else { continue }
-            // Attempt session key resolution rules quickly
-            let countryFallback = ["Montréal": "Canada", "São Paulo": "Brazil"][ev.location]
-            // We cannot resolve key synchronously here; just check any local files that match pattern
-            // This is a heuristic fallback; the SessionResults view resolves and caches per selection.
-            // If any cached file exists, consider event interactable while offline.
-            // session_key unknown → we cannot know exact filename, so return false by default.
-            _ = (name, countryFallback) // keep vars used; actual cache check requires key
+        for i in 0..<min(event.sessionNames.count, event.sessionDatesUTC.count) {
+            guard let sessionName = event.sessionNames[i] else { continue }
+            let countryFallback = ["Montréal": "Canada", "São Paulo": "Brazil"][event.location]
+            _ = (sessionName, countryFallback)
         }
         return false
     }

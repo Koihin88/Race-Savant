@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterator, List, Optional
-
+from typing import Dict, Iterator, List, Optional, Tuple
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -11,6 +10,7 @@ from db import create_engine_and_session, db_session
 from models import Driver, Event, Lap, Session as DbSession, Telemetry
 import pandas as pd
 import fastf1
+from fastf1.ergast import Ergast
 
 
 app = FastAPI(title="Race Savant API", version="0.1.0")
@@ -349,6 +349,398 @@ def get_schedule(year: int, include_testing: bool = False):
             setattr(ev, f"Session{i}DateUtc", dt)
         items.append(ev)
     return items
+
+
+# --- Helpers to resolve by year/round/session and driver code ---
+
+
+def _normalize_session_type(stype: str) -> str:
+    if not stype:
+        return stype
+    s = stype.strip().lower()
+    aliases = {
+        "r": "R",
+        "race": "R",
+        "q": "Q",
+        "qualifying": "Q",
+        "s": "S",
+        "sprint": "S",
+        "ss": "SS",
+        "sprint_shootout": "SS",
+        "sprintshootout": "SS",
+        "fp1": "FP1",
+        "practice1": "FP1",
+        "practice 1": "FP1",
+        "fp2": "FP2",
+        "practice2": "FP2",
+        "practice 2": "FP2",
+        "fp3": "FP3",
+        "practice3": "FP3",
+        "practice 3": "FP3",
+    }
+    return aliases.get(s, stype.upper())
+
+
+def _resolve_event_session(
+    db: OrmSession, *, year: int, round_number: int, session_type: str
+) -> Tuple[Event, DbSession]:
+    stype = _normalize_session_type(session_type)
+    ev = (
+        db.query(Event)
+        .filter(Event.year == year, Event.round == round_number)
+        .first()
+    )
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found for year/round")
+    sess = (
+        db.query(DbSession)
+        .filter(DbSession.event_id == ev.id, DbSession.type == stype)
+        .first()
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found for given event and type")
+    return ev, sess
+
+
+def _resolve_driver_by_code(db: OrmSession, *, code: str) -> Driver:
+    d = db.query(Driver).filter(func.upper(Driver.code) == code.strip().upper()).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    return d
+
+
+# --- Round-based routes (more human-friendly) ---
+
+
+@app.get(
+    "/telemetry/{year}/{round_number}/{session_type}/drivers",
+    response_model=List[DriverItem],
+    summary="List drivers with laps for a year/round/session",
+)
+def list_drivers_by_round(
+    year: int, round_number: int, session_type: str, db: OrmSession = Depends(get_db)
+):
+    _, sess = _resolve_event_session(db, year=year, round_number=round_number, session_type=session_type)
+    rows = (
+        db.query(Driver)
+        .join(Lap, Lap.driver_id == Driver.id)
+        .filter(Lap.session_id == sess.id)
+        .group_by(Driver.id)
+        .order_by(Driver.number)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="No drivers found for session")
+    return [
+        DriverItem(
+            id=d.id,
+            code=d.code,
+            number=d.number,
+            first_name=d.first_name,
+            last_name=d.last_name,
+            team_name=d.team_name,
+            team_color=d.team_color,
+        )
+        for d in rows
+    ]
+
+
+@app.get(
+    "/telemetry/{year}/{round_number}/{session_type}/drivers/{driver_code}/laps",
+    response_model=List[LapItem],
+    summary="List laps for a driver by year/round/session",
+)
+def list_laps_by_round(
+    year: int,
+    round_number: int,
+    session_type: str,
+    driver_code: str,
+    db: OrmSession = Depends(get_db),
+):
+    _, sess = _resolve_event_session(db, year=year, round_number=round_number, session_type=session_type)
+    drv = _resolve_driver_by_code(db, code=driver_code)
+    rows = (
+        db.query(Lap)
+        .filter(Lap.session_id == sess.id, Lap.driver_id == drv.id)
+        .order_by(Lap.lap_number)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="No laps found for driver in session")
+    return [
+        LapItem(
+            lap_number=l.lap_number,
+            lap_time_ms=l.lap_time_ms,
+            position=l.position,
+            compound=l.compound,
+            track_status=l.track_status,
+        )
+        for l in rows
+    ]
+
+
+@app.get(
+    "/telemetry/{year}/{round_number}/{session_type}/{driver_code}/{lap_number}",
+    response_model=LapTelemetry,
+    summary="Fetch telemetry arrays for a lap via year/round/session/driver",
+)
+def get_lap_telemetry_by_round(
+    year: int,
+    round_number: int,
+    session_type: str,
+    driver_code: str,
+    lap_number: int,
+    db: OrmSession = Depends(get_db),
+):
+    _, sess = _resolve_event_session(db, year=year, round_number=round_number, session_type=session_type)
+    drv = _resolve_driver_by_code(db, code=driver_code)
+    lap = (
+        db.query(Lap)
+        .filter(
+            Lap.session_id == sess.id,
+            Lap.driver_id == drv.id,
+            Lap.lap_number == lap_number,
+        )
+        .first()
+    )
+    if not lap:
+        raise HTTPException(status_code=404, detail="Lap not found")
+    teles = db.query(Telemetry).filter(Telemetry.lap_id == lap.id).order_by(Telemetry.time_s).all()
+    time_s = [t.time_s for t in teles]
+    distance_m = [t.distance_m for t in teles]
+    speed_kmh = [t.speed_kmh for t in teles]
+    rpm = [t.rpm for t in teles]
+    gear = [t.gear for t in teles]
+    throttle = [t.throttle for t in teles]
+    brake = [t.brake for t in teles]
+    drs = [t.drs for t in teles]
+
+    meta = LapItem(
+        lap_number=lap.lap_number,
+        lap_time_ms=lap.lap_time_ms,
+        position=lap.position,
+        compound=lap.compound,
+        track_status=lap.track_status,
+    )
+    return LapTelemetry(
+        session_id=sess.id,
+        driver_id=drv.id,
+        lap_number=lap_number,
+        time_s=time_s,
+        distance_m=distance_m,
+        speed_kmh=speed_kmh,
+        rpm=rpm,
+        gear=gear,
+        throttle=throttle,
+        brake=brake,
+        drs=drs,
+        meta=meta,
+    )
+
+
+# --- Race positions (per-lap) ---
+
+
+class DriverPositionsItem(BaseModel):
+    driver_code: str
+    positions: List[Optional[int]]
+
+
+class RacePositions(BaseModel):
+    session_id: int
+    year: int
+    round: int
+    session_type: str
+    laps: int
+    drivers: List[DriverPositionsItem]
+
+
+@app.get(
+    "/telemetry/{year}/{round_number}/{session_type}/positions",
+    response_model=RacePositions,
+    summary="All drivers' lap-by-lap positions for a session",
+)
+def get_race_positions(
+    year: int, round_number: int, session_type: str, db: OrmSession = Depends(get_db)
+):
+    ev, sess = _resolve_event_session(db, year=year, round_number=round_number, session_type=session_type)
+
+    max_lap = (
+        db.query(func.max(Lap.lap_number)).filter(Lap.session_id == sess.id).scalar()
+    )
+    if not max_lap or max_lap <= 0:
+        raise HTTPException(status_code=404, detail="No laps found for session")
+
+    # Initialize positions arrays per driver code
+    drivers_rows = (
+        db.query(Driver.code, Driver.id)
+        .join(Lap, Lap.driver_id == Driver.id)
+        .filter(Lap.session_id == sess.id)
+        .group_by(Driver.id)
+        .all()
+    )
+    positions_map: Dict[str, List[Optional[int]]] = {
+        code: [None] * int(max_lap) for code, _ in drivers_rows
+    }
+
+    # Fill positions
+    laps_rows = (
+        db.query(Driver.code, Lap.lap_number, Lap.position)
+        .join(Driver, Driver.id == Lap.driver_id)
+        .filter(Lap.session_id == sess.id)
+        .order_by(Driver.code, Lap.lap_number)
+        .all()
+    )
+    for code, lap_no, pos in laps_rows:
+        if 1 <= int(lap_no) <= int(max_lap):
+            positions_map[code][int(lap_no) - 1] = pos
+
+    items = [
+        DriverPositionsItem(driver_code=code, positions=positions)
+        for code, positions in sorted(positions_map.items())
+    ]
+    return RacePositions(
+        session_id=sess.id,
+        year=ev.year,
+        round=ev.round or round_number,
+        session_type=_normalize_session_type(session_type),
+        laps=int(max_lap),
+        drivers=items,
+    )
+
+
+# --- Standings (Ergast via FastF1) ---
+
+
+class StandingSeries(BaseModel):
+    code: str
+    points: List[Optional[float]]
+
+
+class StandingsProgress(BaseModel):
+    season: int
+    rounds: int
+    entries: List[StandingSeries]
+
+
+def _find_col(columns: List[str], candidates: List[str]) -> Optional[str]:
+    cols = [c.lower() for c in columns]
+    for cand in candidates:
+        if cand.lower() in cols:
+            # return original-cased name
+            return columns[cols.index(cand.lower())]
+    return None
+
+
+@app.get(
+    "/standings/{season}/drivers",
+    response_model=StandingsProgress,
+    summary="Driver standings progression across rounds (Ergast)",
+)
+def driver_standings_progress(season: int):
+    try:
+        ergast = Ergast()
+        latest = ergast.get_driver_standings(season=season)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to load Ergast data: {e}")
+
+    try:
+        num_rounds = int(latest.description.get("round", 0))
+    except Exception:
+        num_rounds = 0
+    if num_rounds <= 0:
+        raise HTTPException(status_code=404, detail="No standings rounds available for season")
+
+    all_parts: List[pd.DataFrame] = []
+    for rnd in range(1, num_rounds + 1):
+        res = ergast.get_driver_standings(season=season, round=rnd)
+        if not getattr(res, "content", None):
+            continue
+        df = res.content[0].copy()
+        if df is None or df.empty:
+            continue
+        df["round"] = rnd
+        # Normalize columns
+        code_col = _find_col(list(df.columns), ["driverCode", "code", "driver", "driverId"])
+        if not code_col:
+            # fallback: compose from name columns if present
+            first = _find_col(list(df.columns), ["givenName", "firstName"]) or ""
+            last = _find_col(list(df.columns), ["familyName", "lastName"]) or ""
+            if first and last:
+                df["driverCode"] = (df[first].str[:1] + df[last].str[:2]).str.upper()
+                code_col = "driverCode"
+            else:
+                code_col = df.columns[0]
+        pts_col = _find_col(list(df.columns), ["points"]) or "points"
+        # Ensure numeric points
+        df[pts_col] = pd.to_numeric(df[pts_col], errors="coerce")
+        all_parts.append(df[[code_col, "round", pts_col]].rename(columns={code_col: "code", pts_col: "points"}))
+
+    if not all_parts:
+        raise HTTPException(status_code=404, detail="No standings data found")
+
+    combined = pd.concat(all_parts, ignore_index=True)
+    # Pivot: index by driver code, columns by round
+    table = combined.pivot(index="code", columns="round", values="points").sort_index()
+    # Build response
+    entries = []
+    for code, row in table.iterrows():
+        pts = [None] * num_rounds
+        for rnd, value in row.items():
+            if 1 <= int(rnd) <= num_rounds:
+                pts[int(rnd) - 1] = None if pd.isna(value) else float(value)
+        entries.append(StandingSeries(code=str(code), points=pts))
+    return StandingsProgress(season=season, rounds=num_rounds, entries=entries)
+
+
+@app.get(
+    "/standings/{season}/constructors",
+    response_model=StandingsProgress,
+    summary="Constructor standings progression across rounds (Ergast)",
+)
+def constructor_standings_progress(season: int):
+    try:
+        ergast = Ergast()
+        latest = ergast.get_constructor_standings(season=season)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to load Ergast data: {e}")
+
+    try:
+        num_rounds = int(latest.description.get("round", 0))
+    except Exception:
+        num_rounds = 0
+    if num_rounds <= 0:
+        raise HTTPException(status_code=404, detail="No standings rounds available for season")
+
+    all_parts: List[pd.DataFrame] = []
+    for rnd in range(1, num_rounds + 1):
+        res = ergast.get_constructor_standings(season=season, round=rnd)
+        if not getattr(res, "content", None):
+            continue
+        df = res.content[0].copy()
+        if df is None or df.empty:
+            continue
+        df["round"] = rnd
+        name_col = _find_col(list(df.columns), ["constructorRef", "constructorId", "constructor", "name", "team"])
+        if not name_col:
+            name_col = df.columns[0]
+        pts_col = _find_col(list(df.columns), ["points"]) or "points"
+        df[pts_col] = pd.to_numeric(df[pts_col], errors="coerce")
+        all_parts.append(df[[name_col, "round", pts_col]].rename(columns={name_col: "code", pts_col: "points"}))
+
+    if not all_parts:
+        raise HTTPException(status_code=404, detail="No standings data found")
+
+    combined = pd.concat(all_parts, ignore_index=True)
+    table = combined.pivot(index="code", columns="round", values="points").sort_index()
+    entries = []
+    for code, row in table.iterrows():
+        pts = [None] * num_rounds
+        for rnd, value in row.items():
+            if 1 <= int(rnd) <= num_rounds:
+                pts[int(rnd) - 1] = None if pd.isna(value) else float(value)
+        entries.append(StandingSeries(code=str(code), points=pts))
+    return StandingsProgress(season=season, rounds=num_rounds, entries=entries)
 
 
 if __name__ == "__main__":
